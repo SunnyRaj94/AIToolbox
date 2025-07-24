@@ -1,0 +1,49 @@
+# --- Application Settings ---
+root_path: <ROOT_PATH>/
+app:
+  project_name: "AIToolKit: AI Productivity Hub"
+  debug_mode: true
+  port: 8501 # Streamlit's default port, or change if you use another server
+  title_icon: "⚕️" # Default icon for the app title
+  layout: "wide" # Streamlit page layout: "centered" or "wide"
+  sidebar_state: "expanded" # Streamlit sidebar state: "auto", "expanded", or "collapsed"
+
+# --- JWT Settings (if you plan to add authentication later) ---
+jwt:
+  secret_key: "super-secret-key-replace-me-in-production" # IMPORTANT: Replace this with a strong, randomly generated key in production
+  access_token_expire_minutes: 60
+  algorithm: "HS256"
+
+# --- LLM Settings ---
+llm_settings:
+  available_providers:
+    - "OpenAI"
+    - "Groq"
+    - "Ollama"
+    - "Google Gemini (Placeholder)"
+  default_provider: "OpenAI"
+  openai_default_model: "gpt-4o"
+  groq_default_model: "llama3-8b-8192"
+  ollama_default_model: "llama2"
+
+# --- SQL Agent Settings ---
+sql_agent_settings:
+  schema_storage_path: "${root_path}/data/sql_schemas.json" # Path relative to project root for storing user-defined schemas
+  default_prompt_template: "${root_path}/aitoolkit/backend/prompts/sql_agent_prompt.txt" # Path to default prompt template
+
+# --- RAG Agent Settings ---
+rag_agent_settings:
+  vector_db_type: "FAISS" # Or "ChromaDB", "Pinecone" etc.
+  embedding_model_name: "text-embedding-ada-002" # For OpenAI embeddings or a local model name
+  chunk_size: 1000
+  chunk_overlap: 200
+  persist_directory: "${root_path}/data/rag_vector_store" # Directory to persist FAISS index or other local vector dbs
+
+# --- Code Summarizer Agent Settings ---
+code_summarizer_settings:
+  default_prompt_template: "${root_path}/aitoolkit/backend/prompts/code_summarizer_prompt.txt"
+
+# --- Other Global Settings (add as needed) ---
+logging:
+  level: "INFO"
+  file: "app.log"

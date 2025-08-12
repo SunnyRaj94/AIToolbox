@@ -21,6 +21,7 @@ faiss-cpu = "^1.8.0" # For vector storage in RAG
 tiktoken = "^0.7.0" # For token counting (useful for LLMs)
 jupyter = "^1.1.1"
 groq = "^0.30.0"
+sentence-transformers = "^5.0.0"
 
 [build-system]
 requires = ["poetry-core"]

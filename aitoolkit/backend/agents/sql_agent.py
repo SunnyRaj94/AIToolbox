@@ -1,70 +1,134 @@
 # src/aitoolkit/backend/agents/sql_agent.py
 from typing import Optional, AsyncGenerator
-from aitoolkit.backend.llm import BaseLLM
+from aitoolkit.backend.llm import BaseLLM, EmbeddingLLM # Import EmbeddingLLM
+from aitoolkit.backend.db import SchemaManager # Import SchemaManager
 from aitoolkit.config import configs
 from pathlib import Path
+import re
+import logging
+
+log = logging.getLogger(__name__)
 
 class SQLAgent:
     """
     Agent responsible for generating SQL queries from natural language questions
-    based on provided database schemas.
+    based on provided database schemas, utilizing semantic search for context retrieval.
     """
-    def __init__(self, llm: BaseLLM):
+    # CORRECTED __init__ signature
+    def __init__(self, llm: BaseLLM, embedding_llm: EmbeddingLLM, schema_manager: SchemaManager):
         self.llm = llm
+        self.embedding_llm = embedding_llm # Store the embedding LLM
+        self.schema_manager = schema_manager # Store the schema manager
         self.prompt_template = self._load_prompt_template()
 
     def _load_prompt_template(self) -> str:
         """Loads the default prompt template for the SQL Agent."""
         template_path = Path(configs.get('sql_agent_settings').get('default_prompt_template'))
         if not template_path.exists():
+            log.error(f"SQL Agent prompt template not found at: {template_path}")
             raise FileNotFoundError(f"SQL Agent prompt template not found at: {template_path}")
         with open(template_path, 'r', encoding='utf-8') as f:
             return f.read()
 
-    async def generate_sql_query(self, natural_language_question: str, schema_definition: str) -> str:
+    async def generate_sql_query(self, natural_language_question: str, selected_schema_name: str) -> str:
         """
-        Generates a SQL query from a natural language question and a schema.
+        Generates a SQL query from a natural language question and a selected schema,
+        using semantic search to retrieve relevant schema parts.
         """
-        # Construct the prompt for the LLM
+        # 1. Generate embedding for the question
+        try:
+            query_embedding = self.embedding_llm.get_embedding(natural_language_question)
+        except Exception as e:
+            log.error(f"Failed to generate embedding for query: {e}")
+            return f"Error: Failed to process query for embedding: {e}"
+
+        # 2. Retrieve relevant schema fragments from the vector store for the selected schema
+        # Filter by schema_name namespace if your vector_db_manager supports it, or pass as filter
+        relevant_schema_docs = self.schema_manager.vector_db_manager.search(
+            query_embedding=query_embedding,
+            k=5, # Retrieve top 5 relevant schema fragments
+            filters={"schema_name": selected_schema_name} # Filter by the specific schema
+        )
+        
+        # Consolidate relevant DDL fragments
+        pruned_schema_definition = ""
+        unique_ddl_fragments = set() # Use a set to avoid duplicate DDLs
+        for doc in relevant_schema_docs:
+            if 'raw_ddl_fragment' in doc['metadata']:
+                unique_ddl_fragments.add(doc['metadata']['raw_ddl_fragment'])
+        
+        if unique_ddl_fragments:
+            pruned_schema_definition = "\n\n".join(sorted(list(unique_ddl_fragments))) # Sort for consistent order
+        else:
+            # Fallback: if no specific fragments are retrieved, use the full schema definition
+            # This can happen if embeddings are not perfectly aligned or if schema is very small
+            pruned_schema_definition = self.schema_manager.get_schema(selected_schema_name)
+            log.warning(f"No specific schema fragments found for '{selected_schema_name}'. Using full schema as fallback.")
+            if not pruned_schema_definition:
+                return f"Error: Schema '{selected_schema_name}' not found or empty."
+
+
+        # 3. Construct the prompt for the LLM using the pruned schema
         prompt = self.prompt_template.format(
-            schema_definition=schema_definition,
+            schema_definition=pruned_schema_definition,
             question=natural_language_question
         )
-        print(f"--- SQL Agent Prompt --- \n{prompt}\n--- End Prompt ---") # For debugging
+        log.info(f"--- SQL Agent Prompt (Pruned Schema) --- \n{prompt[:1000]}...\n--- End Prompt ---") # Log partial prompt
 
-        # Use the LLM to generate the SQL query (non-streaming for this output)
-        response = await self.llm.generate_response(prompt, temperature=0.1) # Lower temperature for factual tasks
+        # 4. Use the LLM to generate the SQL query
+        response = await self.llm.generate_response(prompt, temperature=0.1)
         return self._extract_sql_from_response(response)
 
-    async def stream_sql_query(self, natural_language_question: str, schema_definition: str) -> AsyncGenerator[str, None]:
+    async def stream_sql_query(self, natural_language_question: str, selected_schema_name: str) -> AsyncGenerator[str, None]:
         """
-        Generates a SQL query from a natural language question and a schema, with streaming.
+        Generates a SQL query from a natural language question and a selected schema, with streaming,
+        using semantic search for context retrieval.
         """
+        # 1. Generate embedding for the question
+        try:
+            query_embedding = self.embedding_llm.get_embedding(natural_language_question)
+        except Exception as e:
+            log.error(f"Failed to generate embedding for query during streaming: {e}")
+            yield f"Error: Failed to process query for embedding: {e}"
+            return # Stop the generator
+
+        # 2. Retrieve relevant schema fragments
+        relevant_schema_docs = self.schema_manager.vector_db_manager.search(
+            query_embedding=query_embedding,
+            k=5, # Retrieve top 5 relevant schema fragments
+            filters={"schema_name": selected_schema_name}
+        )
+        
+        pruned_schema_definition = ""
+        unique_ddl_fragments = set()
+        for doc in relevant_schema_docs:
+            if 'raw_ddl_fragment' in doc['metadata']:
+                unique_ddl_fragments.add(doc['metadata']['raw_ddl_fragment'])
+        
+        if unique_ddl_fragments:
+            pruned_schema_definition = "\n\n".join(sorted(list(unique_ddl_fragments)))
+        else:
+            pruned_schema_definition = self.schema_manager.get_schema(selected_schema_name)
+            if not pruned_schema_definition:
+                yield f"Error: Schema '{selected_schema_name}' not found or empty."
+                return
+
+        # 3. Construct the prompt for the LLM
         prompt = self.prompt_template.format(
-            schema_definition=schema_definition,
+            schema_definition=pruned_schema_definition,
             question=natural_language_question
         )
+        log.info(f"--- SQL Agent Streaming Prompt (Pruned Schema) --- \n{prompt[:1000]}...\n--- End Prompt ---")
 
         full_response_content = ""
         async for chunk in self.llm.stream_response(prompt, temperature=0.1):
             full_response_content += chunk
-            yield chunk # Yield chunks as they come
+            yield chunk # Yield raw chunks as they come
 
-        # After streaming is complete, extract and yield the final SQL
-        final_sql = self._extract_sql_from_response(full_response_content)
-        # You might want to yield the final, cleaned SQL here if it's different from the streamed chunks
-        # For simplicity, we'll assume direct streaming of the SQL block.
-        # If the LLM generates prose around the SQL, you'll need to yield
-        # only the SQL part in the *last* chunk or after processing.
-        # For now, we'll just let the raw chunks stream.
-        # A better approach would be to stream everything, then process the final output for extraction.
-        # For a *demonstration* of streaming, yielding chunks is fine.
-        # For correctness, you might wait for full_response_content and then extract.
-        # Let's adjust this to *extract and yield* the final SQL block for clarity,
-        # while still showing intermediate streamed tokens.
-        # This means the streamed chunks might be the raw LLM output,
-        # and the *final* display should use the extracted SQL.
-        # We'll handle this in the UI.
+        # After streaming is complete, ensure final extraction for robust display
+        # The UI should ideally handle presenting the extracted part.
+        # This function aims to just stream what the LLM generates.
+        # The _extract_sql_from_response is then used by the UI on the full_response_content.
 
     def _extract_sql_from_response(self, llm_response: str) -> str:
         """
@@ -72,9 +136,11 @@ class SQLAgent:
         Assumes the LLM will wrap SQL in triple backticks (```sql ... ```)
         """
         # This is a basic regex to find SQL code blocks
-        import re
         match = re.search(r"```sql\n(.*?)```", llm_response, re.DOTALL)
         if match:
             return match.group(1).strip()
-        # If no code block found, return the whole response as a fallback
+        
+        # If no code block found, check for specific fallback indicators or return as is
+        # You can add more sophisticated fallback logic if LLM often doesn't use triple backticks
+        log.warning("No ````sql``` block found in LLM response. Returning full response as SQL (may be incorrect).")
         return llm_response.strip()

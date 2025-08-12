@@ -26,6 +26,20 @@ llm_settings:
   groq_default_model: "llama3-8b-8192"
   ollama_default_model: "llama2"
 
+# --- Embedding Settings (for RAG/Semantic Search) ---
+embedding_settings:
+  available_providers:
+    - "OpenAI"
+    - "Google Gemini"
+    - "Ollama"
+    - "Local (Sentence Transformers)" # Add this
+  default_provider: "Local (Sentence Transformers)" # Consider making this the default for local setup
+  openai_default_embedding_model: "text-embedding-ada-002"
+  google_gemini_default_embedding_model: "text-embedding-004"
+  ollama_default_embedding_model: "nomic-embed-text"
+  # Add default model for the new provider
+  local_sentence_transformers_default_embedding_model: "sentence-transformers/all-MiniLM-L6-v2" # Or "BAAI/bge-small-en-v1.5", "intfloat/e5-small-v2"
+
 # --- SQL Agent Settings ---
 sql_agent_settings:
   schema_storage_path: "${root_path}/data/sql_schemas.json" # Path relative to project root for storing user-defined schemas
